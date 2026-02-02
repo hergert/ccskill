@@ -66,9 +66,6 @@ skill_description() {
 cmd_list() {
     check_deps
 
-    gum style --bold --border double --padding "0 2" --margin "1 0" \
-        "Available Skills"
-
     local available
     available=$(available_skills)
 
@@ -77,17 +74,24 @@ cmd_list() {
         return
     fi
 
+    local installed_count=0
+    local total_count=0
     for skill in $available; do
-        local status=""
-        if is_installed "$skill"; then
-            status=$(gum style --foreground 77 "[installed]")
-        fi
+        ((total_count++))
+        is_installed "$skill" && ((installed_count++))
+    done
+
+    gum style --bold "Skills ($installed_count/$total_count installed)"
+    echo ""
+
+    for skill in $available; do
+        local marker=" "
+        is_installed "$skill" && marker=$(gum style --foreground 77 "✓")
 
         local desc
-        desc=$(skill_description "$skill" | head -c 60)
+        desc=$(skill_description "$skill" | head -c 50)
 
-        echo "  $(gum style --bold "$skill") $status"
-        [[ -n "$desc" ]] && dim "    $desc"
+        printf "  %s %-14s %s\n" "$marker" "$skill" "$(dim "$desc")"
     done
 }
 
@@ -95,13 +99,9 @@ cmd_status() {
     check_deps
 
     if [[ ! -d "$PROJECT_SKILLS" ]]; then
-        warn "No skills installed in this project"
-        echo "Run: ccskill add <name>"
+        warn "No skills installed. Run: ccskill add <name>"
         return
     fi
-
-    gum style --bold --border double --padding "0 2" --margin "1 0" \
-        "Installed Skills"
 
     local installed
     installed=$(installed_skills)
@@ -111,21 +111,33 @@ cmd_status() {
         return
     fi
 
+    local updates=0
     for skill in $installed; do
-        local update_status=""
+        if [[ -d "$SKILL_REGISTRY/$skill" ]] && ! diff -rq "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill" &>/dev/null; then
+            ((updates++))
+        fi
+    done
 
-        # Check if update available
+    if [[ $updates -gt 0 ]]; then
+        gum style --bold "Installed ($updates updates available)"
+    else
+        gum style --bold "Installed (all up to date)"
+    fi
+    echo ""
+
+    for skill in $installed; do
+        local marker
         if [[ -d "$SKILL_REGISTRY/$skill" ]]; then
             if ! diff -rq "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill" &>/dev/null; then
-                update_status=$(gum style --foreground 214 "[update available]")
+                marker=$(gum style --foreground 214 "↑")
             else
-                update_status=$(gum style --foreground 240 "[up to date]")
+                marker=$(gum style --foreground 77 "✓")
             fi
         else
-            update_status=$(gum style --foreground 196 "[not in registry]")
+            marker=$(gum style --foreground 196 "?")
         fi
 
-        echo "  $(gum style --bold "$skill") $update_status"
+        printf "  %s %s\n" "$marker" "$skill"
     done
 }
 
