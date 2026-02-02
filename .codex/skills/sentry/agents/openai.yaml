@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sentry Triage"
+  short_description: "Production errors and performance traces"
+  default_prompt: "Use $sentry to list current production errors and highlight the top offenders."

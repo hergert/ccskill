@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trigger.dev Runs"
+  short_description: "Scheduled task failures and run history"
+  default_prompt: "Use $trigger to check recent runs and summarize any failures."

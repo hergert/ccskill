@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cloud Run Logs"
+  short_description: "Cloud Run log triage after deploys"
+  default_prompt: "Use $cloudrun-logs to check the latest deploy and summarize any errors."

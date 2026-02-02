@@ -388,3 +388,74 @@ export PATH="$HOME/.skills:$PATH"  # Add to ~/.zshrc
 ```
 
 ---
+
+## 2026-02-02 (continued)
+
+**Finalized ccskill CLI**
+
+Added three targeted improvements after pushback on over-engineering:
+
+1. **`info <skill>`** - View full SKILL.md without leaving terminal
+   ```bash
+   ccskill info posthog  # Opens in gum pager (or cat if no TTY)
+   ```
+
+2. **`--yes` flag** - Skip confirmations for scripting
+   ```bash
+   ccskill add posthog --yes
+   ccskill remove sentry -y
+   ```
+
+3. **Fish completions** - Tab completion for commands and skill names
+   - Auto-installed to `~/.config/fish/completions/`
+   - Completes available skills for `info`/`add`, installed skills for `remove`/`update`
+
+**Rejected features (over-engineering):**
+- `search` - unnecessary, skills are few
+- `export/import` - git handles this
+- `doctor` - gum check is enough
+- `create` - mkdir + copy template is fine
+
+**Principle:** A tool that does 5 things well beats one that does 15 things adequately.
+
+**curl|bash installer:**
+```bash
+curl -sSL https://raw.githubusercontent.com/hergert/ccskill/main/install.sh | bash
+```
+
+Installer handles:
+- Clone repo to `~/.skills/`
+- Auto-detect shell (fish/zsh/bash) for PATH instructions
+- Install fish completions if fish present
+- Update existing installation via `git pull`
+
+**TTY detection pattern:**
+```bash
+if command -v gum &>/dev/null && [[ -t 1 ]]; then
+    gum pager < "$file"
+else
+    cat "$file"
+fi
+```
+Works in pipes and redirects where gum would fail.
+
+**Final structure:**
+```
+~/.skills/
+├── ccskill              # CLI tool
+├── install.sh           # curl|bash installer
+├── completions/
+│   └── ccskill.fish     # Fish completions
+├── posthog/
+│   ├── SKILL.md
+│   └── scripts/posthog.sh
+├── sentry/
+├── trigger/
+├── cloudrun-logs/
+├── db/
+└── JOURNAL.md
+```
+
+**Published:** `github.com/hergert/ccskill`
+
+---

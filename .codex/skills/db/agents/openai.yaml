@@ -1,0 +1,4 @@
+interface:
+  display_name: "DB Queries"
+  short_description: "Run read-only SQL checks and counts"
+  default_prompt: "Use $db to run a quick SQL query and summarize the result."
