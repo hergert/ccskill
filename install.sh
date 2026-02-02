@@ -38,6 +38,14 @@ fi
 # Make executable
 chmod +x "$INSTALL_DIR/ccskill"
 
+# Install fish completions if fish is installed
+if command -v fish &>/dev/null; then
+    FISH_COMP_DIR="${HOME}/.config/fish/completions"
+    mkdir -p "$FISH_COMP_DIR"
+    cp "$INSTALL_DIR/completions/ccskill.fish" "$FISH_COMP_DIR/"
+    echo "✓ Fish completions installed"
+fi
+
 echo ""
 echo "✓ Installed to $INSTALL_DIR"
 echo ""

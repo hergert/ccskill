@@ -6,6 +6,7 @@ set -euo pipefail
 
 SKILL_REGISTRY="${SKILL_REGISTRY:-$HOME/.skills}"
 PROJECT_SKILLS=".claude/skills"
+YES_FLAG=false
 
 # Colors via gum
 info() { gum style --foreground 39 "$@"; }
@@ -13,6 +14,12 @@ success() { gum style --foreground 77 "✓ $*"; }
 warn() { gum style --foreground 214 "⚠ $*"; }
 error() { gum style --foreground 196 "✗ $*"; }
 dim() { gum style --foreground 240 "$@"; }
+
+# Confirm with --yes support
+confirm() {
+    [[ "$YES_FLAG" == true ]] && return 0
+    gum confirm "$@"
+}
 
 # Check dependencies
 check_deps() {
@@ -62,6 +69,28 @@ skill_description() {
 # ============================================================================
 # Commands
 # ============================================================================
+
+cmd_info() {
+    local skill="$1"
+
+    if [[ -z "$skill" ]]; then
+        error "Usage: ccskill info <skill>"
+        return 1
+    fi
+
+    local skill_file="$SKILL_REGISTRY/$skill/SKILL.md"
+    if [[ ! -f "$skill_file" ]]; then
+        error "Skill '$skill' not found"
+        return 1
+    fi
+
+    # Try gum pager, fall back to cat
+    if command -v gum &>/dev/null && [[ -t 1 ]]; then
+        gum pager < "$skill_file"
+    else
+        cat "$skill_file"
+    fi
+}
 
 cmd_list() {
     check_deps
@@ -208,7 +237,7 @@ cmd_remove() {
     fi
 
     # Confirm removal
-    if ! gum confirm "Remove skill '$skill'?"; then
+    if ! confirm "Remove skill '$skill'?"; then
         dim "Cancelled"
         return
     fi
@@ -300,13 +329,13 @@ cmd_update() {
     # Show SKILL.md diff preview
     if ! diff -q "$PROJECT_SKILLS/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" &>/dev/null 2>&1; then
         echo ""
-        if gum confirm "Show SKILL.md diff?"; then
+        if confirm "Show SKILL.md diff?"; then
             diff -u "$PROJECT_SKILLS/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" | head -40 || true
         fi
     fi
 
     echo ""
-    if ! gum confirm "Apply update to $skill?"; then
+    if ! confirm "Apply update to $skill?"; then
         dim "Cancelled"
         return
     fi
@@ -367,21 +396,23 @@ USAGE
 COMMANDS
     list              Show available skills from registry
     status            Show installed skills + update status
-    add [name]        Add skill to current project (interactive if no name)
+    info <name>       Show full skill details (SKILL.md)
+    add [name]        Add skill to current project
     remove [name]     Remove skill from current project
     update [name]     Update skill(s) with diff preview
     sync              Pull latest skills from git remote
     init              Initialize skill registry
 
-ENVIRONMENT
-    SKILL_REGISTRY    Path to skill registry (default: ~/.skills)
+OPTIONS
+    -y, --yes         Skip confirmations (for scripts)
 
 EXAMPLES
     ccskill list                  # See what's available
-    ccskill add posthog           # Add posthog to this project
-    ccskill add                   # Interactive skill selection
+    ccskill info posthog          # View skill details
+    ccskill add posthog           # Add to this project
+    ccskill add posthog --yes     # Add without confirmation
     ccskill status                # Check for updates
-    ccskill update                # Update all skills
+    ccskill update                # Update skills
 
 INSTALL
     # Add to PATH (add to ~/.zshrc or ~/.bashrc)
@@ -414,9 +445,22 @@ cmd_sync() {
 # Main
 # ============================================================================
 
+# Parse --yes flag
+for arg in "$@"; do
+    [[ "$arg" == "-y" || "$arg" == "--yes" ]] && YES_FLAG=true
+done
+
+# Remove flags from arguments
+args=()
+for arg in "$@"; do
+    [[ "$arg" != "-y" && "$arg" != "--yes" ]] && args+=("$arg")
+done
+set -- "${args[@]}"
+
 case "${1:-help}" in
     list)       cmd_list ;;
     status)     cmd_status ;;
+    info)       cmd_info "${2:-}" ;;
     add)        cmd_add "${2:-}" ;;
     remove|rm)  cmd_remove "${2:-}" ;;
     update|up)  cmd_update "${2:-}" ;;
