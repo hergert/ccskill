@@ -224,20 +224,32 @@ cmd_update() {
     local skill="$1"
 
     if [[ -z "$skill" ]]; then
-        # Update all or select one
-        local installed
-        installed=$(installed_skills)
+        # Find skills with updates available
+        local with_updates=""
+        for s in $(installed_skills); do
+            if [[ -d "$SKILL_REGISTRY/$s" ]] && ! diff -rq "$SKILL_REGISTRY/$s" "$PROJECT_SKILLS/$s" &>/dev/null; then
+                with_updates="$with_updates$s"$'\n'
+            fi
+        done
+        with_updates=$(echo "$with_updates" | sed '/^$/d')
 
-        if [[ -z "$installed" ]]; then
-            warn "No skills installed"
+        if [[ -z "$with_updates" ]]; then
+            success "All skills up to date"
             return
         fi
 
-        local choice
-        choice=$(echo -e "Update all\n$installed" | gum choose --header "Select skill to update:")
+        local count
+        count=$(echo "$with_updates" | wc -l | tr -d ' ')
 
-        if [[ "$choice" == "Update all" ]]; then
-            for s in $installed; do
+        local choice
+        if [[ $count -eq 1 ]]; then
+            choice="$with_updates"
+        else
+            choice=$(echo -e "Update all ($count)\n$with_updates" | gum choose --header "Select skill to update:")
+        fi
+
+        if [[ "$choice" == "Update all"* ]]; then
+            for s in $with_updates; do
                 cmd_update "$s"
             done
             return
