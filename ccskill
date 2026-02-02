@@ -1,11 +1,13 @@
 #!/bin/bash
-# ccskill - Manage Claude Code skills across projects
+# ccskill - Manage Claude Code and Codex skills across projects
 # Requires: gum (brew install gum)
 
 set -euo pipefail
 
 SKILL_REGISTRY="${SKILL_REGISTRY:-$HOME/.skills}"
-PROJECT_SKILLS=".claude/skills"
+PROJECT_SKILLS_CLAUDE=".claude/skills"
+PROJECT_SKILLS_CODEX=".codex/skills"
+TARGET_MODE="${CCSKILL_TARGET:-auto}"
 YES_FLAG=false
 
 # Colors via gum
@@ -42,18 +44,172 @@ available_skills() {
     done
 }
 
-# Get list of installed skills in current project
-installed_skills() {
-    [[ ! -d "$PROJECT_SKILLS" ]] && return
+# Resolve target to project path
+target_dir() {
+    case "$1" in
+        claude) echo "$PROJECT_SKILLS_CLAUDE" ;;
+        codex) echo "$PROJECT_SKILLS_CODEX" ;;
+        *) echo "" ;;
+    esac
+}
 
-    for dir in "$PROJECT_SKILLS"/*/; do
-        [[ -f "$dir/SKILL.md" ]] && basename "$dir"
+# Resolve target to label
+target_label() {
+    case "$1" in
+        claude) echo "Claude" ;;
+        codex) echo "Codex" ;;
+        *) echo "Unknown" ;;
+    esac
+}
+
+# Determine targets without prompting (respects CCSKILL_TARGET)
+determine_targets() {
+    local mode="$TARGET_MODE"
+    case "$mode" in
+        claude|claude-code|claudecode) echo "claude" ;;
+        codex|codex-code) echo "codex" ;;
+        both) echo "claude codex" ;;
+        auto|"")
+            local present=()
+            [[ -d "$PROJECT_SKILLS_CLAUDE" || -d ".claude" ]] && present+=("claude")
+            [[ -d "$PROJECT_SKILLS_CODEX" || -d ".codex" ]] && present+=("codex")
+
+            if [[ ${#present[@]} -eq 2 ]]; then
+                echo "claude codex"
+            elif [[ ${#present[@]} -eq 1 ]]; then
+                echo "${present[0]}"
+            else
+                echo "claude"
+            fi
+            ;;
+        *)
+            error "Unknown CCSKILL_TARGET: $mode (use claude|codex|both|auto)"
+            exit 1
+            ;;
+    esac
+}
+
+select_targets_only() {
+    check_deps
+    if [[ ! -t 1 ]]; then
+        determine_targets
+        return
+    fi
+
+    local selection
+    selection=$(printf "[target] Claude\n[target] Codex" | gum choose --no-limit --header "Select target(s):") || return
+
+    SELECTED_TARGETS=()
+    while IFS= read -r line; do
+        case "$line" in
+            "[target] "*)
+                local t="${line#"[target] "}"
+                t="$(printf "%s" "$t" | tr '[:upper:]' '[:lower:]')"
+                SELECTED_TARGETS+=("$t")
+                ;;
+        esac
+    done <<< "$selection"
+
+    if [[ ${#SELECTED_TARGETS[@]} -eq 0 ]]; then
+        return 1
+    fi
+
+    printf "%s " "${SELECTED_TARGETS[@]}" | sed 's/ $//'
+}
+
+select_targets_and_skills() {
+    local header="$1"
+    shift
+    local skills=("$@")
+
+    check_deps
+    if [[ ! -t 1 ]]; then
+        return 1
+    fi
+
+    if [[ ${#skills[@]} -eq 0 ]]; then
+        warn "No skills available to select"
+        return 1
+    fi
+
+    local items=()
+    for s in "${skills[@]}"; do
+        items+=("[skill] $s")
+    done
+    items+=("----------")
+    items+=("[target] Claude")
+    items+=("[target] Codex")
+
+    local selection
+    selection=$(printf "%s\n" "${items[@]}" | gum choose --no-limit --header "$header") || return
+
+    SELECTED_TARGETS=()
+    SELECTED_SKILLS=()
+    while IFS= read -r line; do
+        case "$line" in
+            "[target] "*)
+                local t="${line#"[target] "}"
+                t="$(printf "%s" "$t" | tr '[:upper:]' '[:lower:]')"
+                SELECTED_TARGETS+=("$t")
+                ;;
+            "[skill] "*)
+                SELECTED_SKILLS+=("${line#"[skill] "}")
+                ;;
+        esac
+    done <<< "$selection"
+
+    if [[ ${#SELECTED_SKILLS[@]} -eq 0 ]]; then
+        warn "Select at least one skill"
+        return 1
+    fi
+}
+
+targets_for_skill_installed() {
+    local skill="$1"
+    local targets=()
+    local dir
+    dir="$(target_dir "claude")"
+    is_installed_dir "$dir" "$skill" && targets+=("claude")
+    dir="$(target_dir "codex")"
+    is_installed_dir "$dir" "$skill" && targets+=("codex")
+    printf "%s " "${targets[@]}" | sed 's/ $//'
+}
+
+installed_pairs() {
+    local entries=()
+    local dir
+    dir="$(target_dir "claude")"
+    if [[ -d "$dir" ]]; then
+        for d in "$dir"/*/; do
+            [[ -f "$d/SKILL.md" ]] || continue
+            entries+=("$(basename "$d") :: Claude")
+        done
+    fi
+    dir="$(target_dir "codex")"
+    if [[ -d "$dir" ]]; then
+        for d in "$dir"/*/; do
+            [[ -f "$d/SKILL.md" ]] || continue
+            entries+=("$(basename "$d") :: Codex")
+        done
+    fi
+    printf "%s\n" "${entries[@]}" | sort
+}
+
+# Get list of installed skills in target directory
+installed_skills_dir() {
+    local dir="$1"
+    [[ -z "$dir" || ! -d "$dir" ]] && return
+
+    for d in "$dir"/*/; do
+        [[ -f "$d/SKILL.md" ]] && basename "$d"
     done
 }
 
-# Check if skill is installed
-is_installed() {
-    [[ -d "$PROJECT_SKILLS/$1" ]]
+# Check if skill is installed in target directory
+is_installed_dir() {
+    local dir="$1"
+    local skill="$2"
+    [[ -n "$dir" && -d "$dir/$skill" ]]
 }
 
 # Get skill description from SKILL.md frontmatter
@@ -94,6 +250,25 @@ cmd_info() {
 
 cmd_list() {
     check_deps
+    local targets
+    targets=($(determine_targets))
+
+    if [[ ${#targets[@]} -gt 1 ]]; then
+        for t in "${targets[@]}"; do
+            gum style --bold "$(target_label "$t") skills"
+            echo ""
+            cmd_list_target "$t"
+            echo ""
+        done
+    else
+        cmd_list_target "${targets[0]}"
+    fi
+}
+
+cmd_list_target() {
+    local target="$1"
+    local project_dir
+    project_dir="$(target_dir "$target")"
 
     local available
     available=$(available_skills)
@@ -107,7 +282,7 @@ cmd_list() {
     local total_count=0
     for skill in $available; do
         ((total_count++))
-        is_installed "$skill" && ((installed_count++))
+        is_installed_dir "$project_dir" "$skill" && ((installed_count++))
     done
 
     gum style --bold "Skills ($installed_count/$total_count installed)"
@@ -115,7 +290,7 @@ cmd_list() {
 
     for skill in $available; do
         local marker=" "
-        is_installed "$skill" && marker=$(gum style --foreground 77 "✓")
+        is_installed_dir "$project_dir" "$skill" && marker=$(gum style --foreground 77 "✓")
 
         local desc
         desc=$(skill_description "$skill" | head -c 50)
@@ -126,38 +301,57 @@ cmd_list() {
 
 cmd_status() {
     check_deps
+    local targets
+    targets=($(determine_targets))
 
-    if [[ ! -d "$PROJECT_SKILLS" ]]; then
-        warn "No skills installed. Run: ccskill add <name>"
+    if [[ ${#targets[@]} -gt 1 ]]; then
+        for t in "${targets[@]}"; do
+            cmd_status_target "$t"
+            echo ""
+        done
+    else
+        cmd_status_target "${targets[0]}"
+    fi
+}
+
+cmd_status_target() {
+    local target="$1"
+    local project_dir
+    project_dir="$(target_dir "$target")"
+    local label
+    label="$(target_label "$target")"
+
+    if [[ ! -d "$project_dir" ]]; then
+        warn "No skills installed for $label. Run: ccskill add <name> --target $target"
         return
     fi
 
     local installed
-    installed=$(installed_skills)
+    installed=$(installed_skills_dir "$project_dir")
 
     if [[ -z "$installed" ]]; then
-        warn "No skills installed"
+        warn "No skills installed for $label"
         return
     fi
 
     local updates=0
     for skill in $installed; do
-        if [[ -d "$SKILL_REGISTRY/$skill" ]] && ! diff -rq "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill" &>/dev/null; then
+        if [[ -d "$SKILL_REGISTRY/$skill" ]] && ! diff -rq "$SKILL_REGISTRY/$skill" "$project_dir/$skill" &>/dev/null; then
             ((updates++))
         fi
     done
 
     if [[ $updates -gt 0 ]]; then
-        gum style --bold "Installed ($updates updates available)"
+        gum style --bold "$label ( $updates updates available )"
     else
-        gum style --bold "Installed (all up to date)"
+        gum style --bold "$label (all up to date)"
     fi
     echo ""
 
     for skill in $installed; do
         local marker
         if [[ -d "$SKILL_REGISTRY/$skill" ]]; then
-            if ! diff -rq "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill" &>/dev/null; then
+            if ! diff -rq "$SKILL_REGISTRY/$skill" "$project_dir/$skill" &>/dev/null; then
                 marker=$(gum style --foreground 214 "↑")
             else
                 marker=$(gum style --foreground 77 "✓")
@@ -173,19 +367,34 @@ cmd_status() {
 cmd_add() {
     check_deps
     local skill="$1"
+    local targets=()
 
     if [[ -z "$skill" ]]; then
-        # Interactive selection
-        local available
-        available=$(available_skills | grep -v "^$(installed_skills | tr '\n' '$' | sed 's/\$/\\|/g')$" 2>/dev/null || available_skills)
+        if [[ ! -t 1 ]]; then
+            error "Non-interactive add requires a skill name"
+            return 1
+        fi
 
-        if [[ -z "$available" ]]; then
-            warn "All skills already installed"
+        local available_list=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && available_list+=("$line")
+        done < <(available_skills)
+
+        if ! select_targets_and_skills "Select skills to add (targets optional below)" "${available_list[@]}"; then
             return
         fi
 
-        skill=$(echo "$available" | gum choose --header "Select skill to add:")
-        [[ -z "$skill" ]] && return
+        local targets=("${SELECTED_TARGETS[@]}")
+        if [[ ${#targets[@]} -eq 0 ]]; then
+            targets=($(determine_targets))
+        fi
+
+        for s in "${SELECTED_SKILLS[@]}"; do
+            for t in "${targets[@]}"; do
+                add_skill_to_target "$s" "$t"
+            done
+        done
+        return
     fi
 
     # Validate skill exists
@@ -194,76 +403,228 @@ cmd_add() {
         return 1
     fi
 
-    # Check if already installed
-    if is_installed "$skill"; then
-        warn "Skill '$skill' already installed"
-        echo "Run: ccskill update $skill"
+    if [[ -t 1 ]]; then
+        targets=($(select_targets_only)) || return
+    else
+        targets=($(determine_targets))
+    fi
+
+    for t in "${targets[@]}"; do
+        add_skill_to_target "$skill" "$t"
+    done
+}
+
+add_skill_to_target() {
+    local skill="$1"
+    local target="$2"
+    local project_dir
+    project_dir="$(target_dir "$target")"
+    local label
+    label="$(target_label "$target")"
+
+    if [[ -z "$project_dir" ]]; then
+        error "Invalid target: $target"
         return 1
     fi
 
-    # Create project skills directory if needed
-    mkdir -p "$PROJECT_SKILLS"
+    if is_installed_dir "$project_dir" "$skill"; then
+        warn "Skill '$skill' already installed for $label"
+        return 0
+    fi
 
-    # Copy skill
-    gum spin --spinner dot --title "Adding $skill..." -- \
-        cp -R "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill"
+    mkdir -p "$project_dir"
 
-    success "Added $skill"
-    dim "  Location: $PROJECT_SKILLS/$skill"
+    gum spin --spinner dot --title "Adding $skill ($label)..." -- \
+        cp -R "$SKILL_REGISTRY/$skill" "$project_dir/$skill"
+
+    success "Added $skill ($label)"
+    dim "  Location: $project_dir/$skill"
 }
 
 cmd_remove() {
     check_deps
     local skill="$1"
+    local targets=()
 
     if [[ -z "$skill" ]]; then
-        # Interactive selection
-        local installed
-        installed=$(installed_skills)
+        if [[ ! -t 1 ]]; then
+            error "Non-interactive remove requires a skill name"
+            return 1
+        fi
 
-        if [[ -z "$installed" ]]; then
+        local pairs=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            pairs+=("$line")
+        done < <(installed_pairs)
+
+        if [[ ${#pairs[@]} -eq 0 ]]; then
             warn "No skills installed"
             return
         fi
 
-        skill=$(echo "$installed" | gum choose --header "Select skill to remove:")
-        [[ -z "$skill" ]] && return
+        local selection
+        selection=$(printf "%s\n" "${pairs[@]}" | gum choose \
+            --no-limit \
+            --selected-prefix="✓ " \
+            --unselected-prefix="  " \
+            --cursor-prefix="> " \
+            --header "Select items to remove") || return
+
+        local selections=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && selections+=("$line")
+        done <<< "$selection"
+
+        if [[ ${#selections[@]} -eq 0 ]]; then
+            dim "Cancelled"
+            return
+        fi
+
+        if ! confirm "Remove ${#selections[@]} selection(s)?"; then
+            dim "Cancelled"
+            return
+        fi
+
+        for line in "${selections[@]}"; do
+            local skill_name="${line%% :: *}"
+            local label="${line##* :: }"
+            local target
+            target="$(printf "%s" "$label" | tr '[:upper:]' '[:lower:]')"
+            local project_dir
+            project_dir="$(target_dir "$target")"
+            if [[ -z "$project_dir" ]]; then
+                continue
+            fi
+            if is_installed_dir "$project_dir" "$skill_name"; then
+                rm -rf "$project_dir/$skill_name"
+                success "Removed $skill_name ($label)"
+            else
+                dim "  Not installed for $label: $skill_name"
+            fi
+        done
+        return
     fi
 
-    # Validate skill is installed
-    if ! is_installed "$skill"; then
-        error "Skill '$skill' not installed"
-        return 1
+    if [[ -t 1 ]]; then
+        targets=($(select_targets_only)) || return
+    else
+        targets=($(determine_targets))
     fi
 
-    # Confirm removal
-    if ! confirm "Remove skill '$skill'?"; then
+    # Confirm removal once for all targets
+    local target_label
+    if [[ ${#targets[@]} -gt 1 ]]; then
+        target_label="Claude + Codex"
+    else
+        target_label="$(target_label "${targets[0]}")"
+    fi
+
+    if ! confirm "Remove skill '$skill' from $target_label?"; then
         dim "Cancelled"
         return
     fi
 
-    # Remove skill
-    rm -rf "$PROJECT_SKILLS/$skill"
+    for t in "${targets[@]}"; do
+        local project_dir
+        project_dir="$(target_dir "$t")"
+        local label
+        label="$(target_label "$t")"
+        if is_installed_dir "$project_dir" "$skill"; then
+            rm -rf "$project_dir/$skill"
+            success "Removed $skill ($label)"
+        else
+            dim "  Not installed for $label"
+        fi
+    done
+}
 
-    success "Removed $skill"
+installed_union() {
+    local targets=("$@")
+    for t in "${targets[@]}"; do
+        installed_skills_dir "$(target_dir "$t")"
+    done | sort -u
 }
 
 cmd_update() {
     check_deps
     local skill="$1"
+    local targets=()
+
+    if [[ -z "$skill" ]]; then
+        if [[ ! -t 1 ]]; then
+            error "Non-interactive update requires a skill name"
+            return 1
+        fi
+
+        local installed_list=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && installed_list+=("$line")
+        done < <(installed_union "claude" "codex")
+
+        if [[ ${#installed_list[@]} -eq 0 ]]; then
+            warn "No skills installed"
+            return
+        fi
+
+        if ! select_targets_and_skills "Select skills to update (targets optional below)" "${installed_list[@]}"; then
+            return
+        fi
+
+        local explicit_targets=("${SELECTED_TARGETS[@]}")
+        for s in "${SELECTED_SKILLS[@]}"; do
+            local targets=("${explicit_targets[@]}")
+            if [[ ${#targets[@]} -eq 0 ]]; then
+                targets=($(targets_for_skill_installed "$s"))
+            fi
+            if [[ ${#targets[@]} -eq 0 ]]; then
+                dim "  Not installed: $s"
+                continue
+            fi
+
+            for t in "${targets[@]}"; do
+                cmd_update_target "$t" "$s"
+            done
+        done
+        return
+    fi
+
+    if [[ -t 1 ]]; then
+        targets=($(select_targets_only)) || return
+    else
+        targets=($(determine_targets))
+    fi
+
+    for t in "${targets[@]}"; do
+        cmd_update_target "$t" "$skill"
+    done
+}
+
+cmd_update_target() {
+    local target="$1"
+    local skill="$2"
+    local project_dir
+    project_dir="$(target_dir "$target")"
+    local label
+    label="$(target_label "$target")"
+
+    if [[ ! -d "$project_dir" ]]; then
+        warn "No skills installed for $label"
+        return
+    fi
 
     if [[ -z "$skill" ]]; then
         # Find skills with updates available
         local with_updates=""
-        for s in $(installed_skills); do
-            if [[ -d "$SKILL_REGISTRY/$s" ]] && ! diff -rq "$SKILL_REGISTRY/$s" "$PROJECT_SKILLS/$s" &>/dev/null; then
+        for s in $(installed_skills_dir "$project_dir"); do
+            if [[ -d "$SKILL_REGISTRY/$s" ]] && ! diff -rq "$SKILL_REGISTRY/$s" "$project_dir/$s" &>/dev/null; then
                 with_updates="$with_updates$s"$'\n'
             fi
         done
         with_updates=$(echo "$with_updates" | sed '/^$/d')
 
         if [[ -z "$with_updates" ]]; then
-            success "All skills up to date"
+            success "$label: all skills up to date"
             return
         fi
 
@@ -274,12 +635,16 @@ cmd_update() {
         if [[ $count -eq 1 ]]; then
             choice="$with_updates"
         else
-            choice=$(echo -e "Update all ($count)\n$with_updates" | gum choose --header "Select skill to update:")
+            choice=$(echo -e "Update all ($count)\n$with_updates" | gum choose --header "Select $label skill to update:")
+        fi
+
+        if [[ -z "$choice" ]]; then
+            return
         fi
 
         if [[ "$choice" == "Update all"* ]]; then
             for s in $with_updates; do
-                cmd_update "$s"
+                cmd_update_target "$target" "$s"
             done
             return
         fi
@@ -289,8 +654,8 @@ cmd_update() {
     fi
 
     # Validate skill is installed
-    if ! is_installed "$skill"; then
-        error "Skill '$skill' not installed"
+    if ! is_installed_dir "$project_dir" "$skill"; then
+        error "$label: Skill '$skill' not installed"
         return 1
     fi
 
@@ -301,50 +666,50 @@ cmd_update() {
     fi
 
     # Check if update needed
-    if diff -rq "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill" &>/dev/null; then
-        success "$skill is already up to date"
+    if diff -rq "$SKILL_REGISTRY/$skill" "$project_dir/$skill" &>/dev/null; then
+        success "$label: $skill is already up to date"
         return
     fi
 
     # Show diff
     gum style --bold --border normal --padding "0 1" --margin "1 0" \
-        "Changes in $skill"
+        "Changes in $skill ($label)"
 
     # Generate diff
     local diff_output
-    diff_output=$(diff -rq "$PROJECT_SKILLS/$skill" "$SKILL_REGISTRY/$skill" 2>/dev/null || true)
+    diff_output=$(diff -rq "$project_dir/$skill" "$SKILL_REGISTRY/$skill" 2>/dev/null || true)
 
     if [[ -n "$diff_output" ]]; then
         echo "$diff_output" | while read -r line; do
-            if [[ "$line" == *"Only in $PROJECT_SKILLS"* ]]; then
+            if [[ "$line" == *"Only in $project_dir"* ]]; then
                 gum style --foreground 196 "  - $(echo "$line" | sed 's/Only in.*: /removed: /')"
             elif [[ "$line" == *"Only in $SKILL_REGISTRY"* ]]; then
                 gum style --foreground 77 "  + $(echo "$line" | sed 's/Only in.*: /added: /')"
             elif [[ "$line" == *"differ"* ]]; then
-                gum style --foreground 214 "  ~ $(echo "$line" | sed 's/Files .* and .* differ/modified:/' | sed "s|$PROJECT_SKILLS/$skill/||")"
+                gum style --foreground 214 "  ~ $(echo "$line" | sed 's/Files .* and .* differ/modified:/' | sed "s|$project_dir/$skill/||")"
             fi
         done
     fi
 
     # Show SKILL.md diff preview
-    if ! diff -q "$PROJECT_SKILLS/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" &>/dev/null 2>&1; then
+    if ! diff -q "$project_dir/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" &>/dev/null 2>&1; then
         echo ""
-        if confirm "Show SKILL.md diff?"; then
-            diff -u "$PROJECT_SKILLS/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" | head -40 || true
+        if confirm "Show SKILL.md diff for $label?"; then
+            diff -u "$project_dir/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" | head -40 || true
         fi
     fi
 
     echo ""
-    if ! confirm "Apply update to $skill?"; then
+    if ! confirm "Apply update to $skill for $label?"; then
         dim "Cancelled"
         return
     fi
 
-    # Backup and update
-    rm -rf "$PROJECT_SKILLS/$skill"
-    cp -R "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill"
+    # Update
+    rm -rf "$project_dir/$skill"
+    cp -R "$SKILL_REGISTRY/$skill" "$project_dir/$skill"
 
-    success "Updated $skill"
+    success "Updated $skill ($label)"
 }
 
 cmd_init() {
@@ -388,7 +753,7 @@ cmd_init() {
 
 cmd_help() {
     cat <<'EOF'
-ccskill - Manage Claude Code skills across projects
+ccskill - Manage Claude Code and Codex skills across projects
 
 USAGE
     ccskill <command> [args]
@@ -413,10 +778,16 @@ EXAMPLES
     ccskill add posthog --yes     # Add without confirmation
     ccskill status                # Check for updates
     ccskill update                # Update skills
+    CCSKILL_TARGET=codex ccskill add posthog   # Scripted target
 
 INSTALL
     # Add to PATH (add to ~/.zshrc or ~/.bashrc)
     export PATH="$HOME/.skills:$PATH"
+
+NOTES
+    Target selection is interactive for add/remove/update when a TTY is
+    available. To force a target in scripts, set CCSKILL_TARGET to
+    claude, codex, or both.
 EOF
 }
 
@@ -435,7 +806,7 @@ cmd_sync() {
     success "Registry synced"
 
     # Show if any installed skills have updates
-    if [[ -d "$PROJECT_SKILLS" ]]; then
+    if [[ -d "$PROJECT_SKILLS_CLAUDE" || -d "$PROJECT_SKILLS_CODEX" ]]; then
         echo ""
         cmd_status
     fi
@@ -445,15 +816,19 @@ cmd_sync() {
 # Main
 # ============================================================================
 
-# Parse --yes flag
-for arg in "$@"; do
-    [[ "$arg" == "-y" || "$arg" == "--yes" ]] && YES_FLAG=true
-done
-
-# Remove flags from arguments
+# Parse flags
 args=()
-for arg in "$@"; do
-    [[ "$arg" != "-y" && "$arg" != "--yes" ]] && args+=("$arg")
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -y|--yes)
+            YES_FLAG=true
+            shift
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
 done
 set -- "${args[@]}"
 

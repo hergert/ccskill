@@ -25,11 +25,13 @@ function __fish_ccskill_available_skills
 end
 
 function __fish_ccskill_installed_skills
-    set -l skills ".claude/skills"
-    test -d "$skills" || return
-    for dir in $skills/*/
-        set -l skill (basename $dir)
-        test -f "$skills/$skill/SKILL.md" && echo $skill
+    set -l dirs ".claude/skills" ".codex/skills"
+    for skills in $dirs
+        test -d "$skills" || continue
+        for dir in $skills/*/
+            set -l skill (basename $dir)
+            test -f "$skills/$skill/SKILL.md" && echo $skill
+        end
     end
 end
 
