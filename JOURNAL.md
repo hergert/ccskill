@@ -342,3 +342,49 @@ After: phrase-oriented, workflow-focused, with warnings
 **Principle:** The description triggers the skill. The trigger phrases section reinforces it. The workflows teach what to do once triggered. Everything else is reference.
 
 ---
+
+## 2026-02-02 (continued)
+
+**Built: `skill` CLI for managing skills across projects**
+
+Problem: Skills scattered across projects, copying manually, no easy way to update.
+
+Solution: Single bash script + gum for beautiful interactive prompts.
+
+```bash
+skill list              # Show available skills
+skill add posthog       # Copy skill to current project
+skill status            # Check what's installed + updates
+skill update            # Replace with diff preview
+skill sync              # Pull from git remote
+```
+
+**Design decisions:**
+
+1. **Copy, not symlink** - Projects stay portable
+2. **Central registry** at `~/.skills/` - Single source of truth
+3. **Update shows diff** - Know what changed before replacing
+4. **gum for UI** - Beautiful prompts, no custom code
+
+**How it works:**
+
+```
+~/.skills/                    # Registry (this repo)
+├── posthog/
+│   ├── SKILL.md
+│   └── scripts/posthog.sh
+├── skill                     # The CLI itself
+└── ...
+
+# In any project:
+skill add posthog             # Copies to .claude/skills/posthog
+skill status                  # Shows [up to date] or [update available]
+skill update posthog          # Shows diff, confirms, replaces
+```
+
+**Install:**
+```bash
+export PATH="$HOME/.skills:$PATH"  # Add to ~/.zshrc
+```
+
+---

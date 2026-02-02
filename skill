@@ -1,0 +1,403 @@
+#!/bin/bash
+# skill - Manage Claude Code skills across projects
+# Requires: gum (brew install gum)
+
+set -euo pipefail
+
+SKILL_REGISTRY="${SKILL_REGISTRY:-$HOME/.skills}"
+PROJECT_SKILLS=".claude/skills"
+
+# Colors via gum
+info() { gum style --foreground 39 "$@"; }
+success() { gum style --foreground 77 "✓ $*"; }
+warn() { gum style --foreground 214 "⚠ $*"; }
+error() { gum style --foreground 196 "✗ $*"; }
+dim() { gum style --foreground 240 "$@"; }
+
+# Check dependencies
+check_deps() {
+    if ! command -v gum &>/dev/null; then
+        echo "Error: gum is required. Install with: brew install gum"
+        exit 1
+    fi
+}
+
+# Get list of available skills from registry
+available_skills() {
+    if [[ ! -d "$SKILL_REGISTRY" ]]; then
+        error "Registry not found at $SKILL_REGISTRY"
+        echo "Run: skill init"
+        exit 1
+    fi
+
+    for dir in "$SKILL_REGISTRY"/*/; do
+        [[ -f "$dir/SKILL.md" ]] && basename "$dir"
+    done
+}
+
+# Get list of installed skills in current project
+installed_skills() {
+    [[ ! -d "$PROJECT_SKILLS" ]] && return
+
+    for dir in "$PROJECT_SKILLS"/*/; do
+        [[ -f "$dir/SKILL.md" ]] && basename "$dir"
+    done
+}
+
+# Check if skill is installed
+is_installed() {
+    [[ -d "$PROJECT_SKILLS/$1" ]]
+}
+
+# Get skill description from SKILL.md frontmatter
+skill_description() {
+    local skill="$1"
+    local skill_file="$SKILL_REGISTRY/$skill/SKILL.md"
+    [[ -f "$skill_file" ]] || return
+
+    # Extract description from YAML frontmatter
+    sed -n '/^---$/,/^---$/p' "$skill_file" | grep '^description:' | sed 's/description: //'
+}
+
+# ============================================================================
+# Commands
+# ============================================================================
+
+cmd_list() {
+    check_deps
+
+    gum style --bold --border double --padding "0 2" --margin "1 0" \
+        "Available Skills"
+
+    local available
+    available=$(available_skills)
+
+    if [[ -z "$available" ]]; then
+        warn "No skills found in registry"
+        return
+    fi
+
+    for skill in $available; do
+        local status=""
+        if is_installed "$skill"; then
+            status=$(gum style --foreground 77 "[installed]")
+        fi
+
+        local desc
+        desc=$(skill_description "$skill" | head -c 60)
+
+        echo "  $(gum style --bold "$skill") $status"
+        [[ -n "$desc" ]] && dim "    $desc"
+    done
+}
+
+cmd_status() {
+    check_deps
+
+    if [[ ! -d "$PROJECT_SKILLS" ]]; then
+        warn "No skills installed in this project"
+        echo "Run: skill add <name>"
+        return
+    fi
+
+    gum style --bold --border double --padding "0 2" --margin "1 0" \
+        "Installed Skills"
+
+    local installed
+    installed=$(installed_skills)
+
+    if [[ -z "$installed" ]]; then
+        warn "No skills installed"
+        return
+    fi
+
+    for skill in $installed; do
+        local update_status=""
+
+        # Check if update available
+        if [[ -d "$SKILL_REGISTRY/$skill" ]]; then
+            if ! diff -rq "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill" &>/dev/null; then
+                update_status=$(gum style --foreground 214 "[update available]")
+            else
+                update_status=$(gum style --foreground 240 "[up to date]")
+            fi
+        else
+            update_status=$(gum style --foreground 196 "[not in registry]")
+        fi
+
+        echo "  $(gum style --bold "$skill") $update_status"
+    done
+}
+
+cmd_add() {
+    check_deps
+    local skill="$1"
+
+    if [[ -z "$skill" ]]; then
+        # Interactive selection
+        local available
+        available=$(available_skills | grep -v "^$(installed_skills | tr '\n' '$' | sed 's/\$/\\|/g')$" 2>/dev/null || available_skills)
+
+        if [[ -z "$available" ]]; then
+            warn "All skills already installed"
+            return
+        fi
+
+        skill=$(echo "$available" | gum choose --header "Select skill to add:")
+        [[ -z "$skill" ]] && return
+    fi
+
+    # Validate skill exists
+    if [[ ! -d "$SKILL_REGISTRY/$skill" ]]; then
+        error "Skill '$skill' not found in registry"
+        return 1
+    fi
+
+    # Check if already installed
+    if is_installed "$skill"; then
+        warn "Skill '$skill' already installed"
+        echo "Run: skill update $skill"
+        return 1
+    fi
+
+    # Create project skills directory if needed
+    mkdir -p "$PROJECT_SKILLS"
+
+    # Copy skill
+    gum spin --spinner dot --title "Adding $skill..." -- \
+        cp -R "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill"
+
+    success "Added $skill"
+    dim "  Location: $PROJECT_SKILLS/$skill"
+}
+
+cmd_remove() {
+    check_deps
+    local skill="$1"
+
+    if [[ -z "$skill" ]]; then
+        # Interactive selection
+        local installed
+        installed=$(installed_skills)
+
+        if [[ -z "$installed" ]]; then
+            warn "No skills installed"
+            return
+        fi
+
+        skill=$(echo "$installed" | gum choose --header "Select skill to remove:")
+        [[ -z "$skill" ]] && return
+    fi
+
+    # Validate skill is installed
+    if ! is_installed "$skill"; then
+        error "Skill '$skill' not installed"
+        return 1
+    fi
+
+    # Confirm removal
+    if ! gum confirm "Remove skill '$skill'?"; then
+        dim "Cancelled"
+        return
+    fi
+
+    # Remove skill
+    rm -rf "$PROJECT_SKILLS/$skill"
+
+    success "Removed $skill"
+}
+
+cmd_update() {
+    check_deps
+    local skill="$1"
+
+    if [[ -z "$skill" ]]; then
+        # Update all or select one
+        local installed
+        installed=$(installed_skills)
+
+        if [[ -z "$installed" ]]; then
+            warn "No skills installed"
+            return
+        fi
+
+        local choice
+        choice=$(echo -e "Update all\n$installed" | gum choose --header "Select skill to update:")
+
+        if [[ "$choice" == "Update all" ]]; then
+            for s in $installed; do
+                cmd_update "$s"
+            done
+            return
+        fi
+
+        skill="$choice"
+        [[ -z "$skill" ]] && return
+    fi
+
+    # Validate skill is installed
+    if ! is_installed "$skill"; then
+        error "Skill '$skill' not installed"
+        return 1
+    fi
+
+    # Validate skill exists in registry
+    if [[ ! -d "$SKILL_REGISTRY/$skill" ]]; then
+        error "Skill '$skill' not found in registry"
+        return 1
+    fi
+
+    # Check if update needed
+    if diff -rq "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill" &>/dev/null; then
+        success "$skill is already up to date"
+        return
+    fi
+
+    # Show diff
+    gum style --bold --border normal --padding "0 1" --margin "1 0" \
+        "Changes in $skill"
+
+    # Generate diff
+    local diff_output
+    diff_output=$(diff -rq "$PROJECT_SKILLS/$skill" "$SKILL_REGISTRY/$skill" 2>/dev/null || true)
+
+    if [[ -n "$diff_output" ]]; then
+        echo "$diff_output" | while read -r line; do
+            if [[ "$line" == *"Only in $PROJECT_SKILLS"* ]]; then
+                gum style --foreground 196 "  - $(echo "$line" | sed 's/Only in.*: /removed: /')"
+            elif [[ "$line" == *"Only in $SKILL_REGISTRY"* ]]; then
+                gum style --foreground 77 "  + $(echo "$line" | sed 's/Only in.*: /added: /')"
+            elif [[ "$line" == *"differ"* ]]; then
+                gum style --foreground 214 "  ~ $(echo "$line" | sed 's/Files .* and .* differ/modified:/' | sed "s|$PROJECT_SKILLS/$skill/||")"
+            fi
+        done
+    fi
+
+    # Show SKILL.md diff preview
+    if ! diff -q "$PROJECT_SKILLS/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" &>/dev/null 2>&1; then
+        echo ""
+        if gum confirm "Show SKILL.md diff?"; then
+            diff -u "$PROJECT_SKILLS/$skill/SKILL.md" "$SKILL_REGISTRY/$skill/SKILL.md" | head -40 || true
+        fi
+    fi
+
+    echo ""
+    if ! gum confirm "Apply update to $skill?"; then
+        dim "Cancelled"
+        return
+    fi
+
+    # Backup and update
+    rm -rf "$PROJECT_SKILLS/$skill"
+    cp -R "$SKILL_REGISTRY/$skill" "$PROJECT_SKILLS/$skill"
+
+    success "Updated $skill"
+}
+
+cmd_init() {
+    check_deps
+
+    if [[ -d "$SKILL_REGISTRY" ]]; then
+        info "Registry already exists at $SKILL_REGISTRY"
+        local count
+        count=$(available_skills | wc -l | tr -d ' ')
+        dim "  $count skills available"
+        return
+    fi
+
+    gum style --bold "Initialize skill registry"
+    echo ""
+
+    # Ask for source
+    local source
+    source=$(gum choose --header "Initialize from:" \
+        "Empty (create manually)" \
+        "Git repository")
+
+    case "$source" in
+        "Empty"*)
+            mkdir -p "$SKILL_REGISTRY"
+            success "Created empty registry at $SKILL_REGISTRY"
+            dim "  Add skills manually to this directory"
+            ;;
+        "Git"*)
+            local repo
+            repo=$(gum input --placeholder "https://github.com/user/skills.git")
+            [[ -z "$repo" ]] && return
+
+            gum spin --spinner dot --title "Cloning..." -- \
+                git clone "$repo" "$SKILL_REGISTRY"
+
+            success "Initialized registry from $repo"
+            ;;
+    esac
+}
+
+cmd_help() {
+    cat <<'EOF'
+skill - Manage Claude Code skills across projects
+
+USAGE
+    skill <command> [args]
+
+COMMANDS
+    list              Show available skills from registry
+    status            Show installed skills + update status
+    add [name]        Add skill to current project (interactive if no name)
+    remove [name]     Remove skill from current project
+    update [name]     Update skill(s) with diff preview
+    sync              Pull latest skills from git remote
+    init              Initialize skill registry
+
+ENVIRONMENT
+    SKILL_REGISTRY    Path to skill registry (default: ~/.skills)
+
+EXAMPLES
+    skill list                    # See what's available
+    skill add posthog             # Add posthog to this project
+    skill add                     # Interactive skill selection
+    skill status                  # Check for updates
+    skill update                  # Update all skills
+
+INSTALL
+    # Add to PATH (add to ~/.zshrc or ~/.bashrc)
+    export PATH="$HOME/.skills:$PATH"
+EOF
+}
+
+cmd_sync() {
+    check_deps
+
+    if [[ ! -d "$SKILL_REGISTRY/.git" ]]; then
+        warn "Registry is not a git repository"
+        dim "  Can't sync without git"
+        return 1
+    fi
+
+    gum spin --spinner dot --title "Syncing registry..." -- \
+        git -C "$SKILL_REGISTRY" pull --rebase
+
+    success "Registry synced"
+
+    # Show if any installed skills have updates
+    if [[ -d "$PROJECT_SKILLS" ]]; then
+        echo ""
+        cmd_status
+    fi
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+
+case "${1:-help}" in
+    list)       cmd_list ;;
+    status)     cmd_status ;;
+    add)        cmd_add "${2:-}" ;;
+    remove|rm)  cmd_remove "${2:-}" ;;
+    update|up)  cmd_update "${2:-}" ;;
+    sync)       cmd_sync ;;
+    init)       cmd_init ;;
+    help|--help|-h) cmd_help ;;
+    *)          error "Unknown command: $1"; cmd_help; exit 1 ;;
+esac
