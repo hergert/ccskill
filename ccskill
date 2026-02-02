@@ -1,5 +1,5 @@
 #!/bin/bash
-# skill - Manage Claude Code skills across projects
+# ccskill - Manage Claude Code skills across projects
 # Requires: gum (brew install gum)
 
 set -euo pipefail
@@ -26,7 +26,7 @@ check_deps() {
 available_skills() {
     if [[ ! -d "$SKILL_REGISTRY" ]]; then
         error "Registry not found at $SKILL_REGISTRY"
-        echo "Run: skill init"
+        echo "Run: ccskill init"
         exit 1
     fi
 
@@ -96,7 +96,7 @@ cmd_status() {
 
     if [[ ! -d "$PROJECT_SKILLS" ]]; then
         warn "No skills installed in this project"
-        echo "Run: skill add <name>"
+        echo "Run: ccskill add <name>"
         return
     fi
 
@@ -156,7 +156,7 @@ cmd_add() {
     # Check if already installed
     if is_installed "$skill"; then
         warn "Skill '$skill' already installed"
-        echo "Run: skill update $skill"
+        echo "Run: ccskill update $skill"
         return 1
     fi
 
@@ -335,10 +335,10 @@ cmd_init() {
 
 cmd_help() {
     cat <<'EOF'
-skill - Manage Claude Code skills across projects
+ccskill - Manage Claude Code skills across projects
 
 USAGE
-    skill <command> [args]
+    ccskill <command> [args]
 
 COMMANDS
     list              Show available skills from registry
@@ -353,11 +353,11 @@ ENVIRONMENT
     SKILL_REGISTRY    Path to skill registry (default: ~/.skills)
 
 EXAMPLES
-    skill list                    # See what's available
-    skill add posthog             # Add posthog to this project
-    skill add                     # Interactive skill selection
-    skill status                  # Check for updates
-    skill update                  # Update all skills
+    ccskill list                  # See what's available
+    ccskill add posthog           # Add posthog to this project
+    ccskill add                   # Interactive skill selection
+    ccskill status                # Check for updates
+    ccskill update                # Update all skills
 
 INSTALL
     # Add to PATH (add to ~/.zshrc or ~/.bashrc)

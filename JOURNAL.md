@@ -345,18 +345,18 @@ After: phrase-oriented, workflow-focused, with warnings
 
 ## 2026-02-02 (continued)
 
-**Built: `skill` CLI for managing skills across projects**
+**Built: `ccskill` CLI for managing skills across projects**
 
 Problem: Skills scattered across projects, copying manually, no easy way to update.
 
 Solution: Single bash script + gum for beautiful interactive prompts.
 
 ```bash
-skill list              # Show available skills
-skill add posthog       # Copy skill to current project
-skill status            # Check what's installed + updates
-skill update            # Replace with diff preview
-skill sync              # Pull from git remote
+ccskill list            # Show available skills
+ccskill add posthog     # Copy skill to current project
+ccskill status          # Check what's installed + updates
+ccskill update          # Replace with diff preview
+ccskill sync            # Pull from git remote
 ```
 
 **Design decisions:**
@@ -373,13 +373,13 @@ skill sync              # Pull from git remote
 ├── posthog/
 │   ├── SKILL.md
 │   └── scripts/posthog.sh
-├── skill                     # The CLI itself
+├── ccskill                   # The CLI itself
 └── ...
 
 # In any project:
-skill add posthog             # Copies to .claude/skills/posthog
-skill status                  # Shows [up to date] or [update available]
-skill update posthog          # Shows diff, confirms, replaces
+ccskill add posthog           # Copies to .claude/skills/posthog
+ccskill status                # Shows [up to date] or [update available]
+ccskill update posthog        # Shows diff, confirms, replaces
 ```
 
 **Install:**
