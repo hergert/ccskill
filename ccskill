@@ -414,6 +414,33 @@ cmd_add() {
     done
 }
 
+# Post-add setup: install deps if skill has package.json or setup.sh
+post_add_setup() {
+    local skill_dir="$1"
+
+    if [[ -f "$skill_dir/scripts/setup.sh" ]]; then
+        if confirm "Run setup for $(basename "$skill_dir")?"; then
+            info "Running setup..."
+            if bash "$skill_dir/scripts/setup.sh"; then
+                success "Setup complete"
+            else
+                warn "Setup had errors — run manually: bash $skill_dir/scripts/setup.sh"
+            fi
+        else
+            dim "  Skipped. Run later: bash $skill_dir/scripts/setup.sh"
+        fi
+    elif [[ -f "$skill_dir/package.json" ]]; then
+        info "Installing dependencies..."
+        if command -v bun &>/dev/null; then
+            (cd "$skill_dir" && bun install --no-save 2>&1 | tail -3)
+        elif command -v npm &>/dev/null; then
+            (cd "$skill_dir" && npm install 2>&1 | tail -3)
+        else
+            warn "No package manager found — install deps manually in $skill_dir"
+        fi
+    fi
+}
+
 add_skill_to_target() {
     local skill="$1"
     local target="$2"
@@ -439,6 +466,9 @@ add_skill_to_target() {
 
     success "Added $skill ($label)"
     dim "  Location: $project_dir/$skill"
+
+    # Post-add: run setup if skill has deps
+    post_add_setup "$project_dir/$skill"
 }
 
 cmd_remove() {
@@ -766,6 +796,8 @@ COMMANDS
     remove [name]     Remove skill from current project
     update [name]     Update skill(s) with diff preview
     sync              Pull latest skills from git remote
+    upgrade           Update ccskill itself from source repo
+    doctor            Check system health + diagnose issues
     init              Initialize skill registry
 
 OPTIONS
@@ -812,6 +844,172 @@ cmd_sync() {
     fi
 }
 
+# Find git root containing the registry
+registry_git_root() {
+    local dir="$SKILL_REGISTRY"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -d "$dir/.git" ]]; then
+            echo "$dir"
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
+}
+
+cmd_upgrade() {
+    check_deps
+
+    local git_root
+    git_root="$(registry_git_root)"
+
+    if [[ -z "$git_root" ]]; then
+        error "Registry is not inside a git repo — can't find source"
+        dim "  Registry: $SKILL_REGISTRY"
+        return 1
+    fi
+
+    local source_script="$git_root/ccskill"
+    if [[ ! -f "$source_script" ]]; then
+        error "No ccskill found in repo root: $git_root"
+        return 1
+    fi
+
+    local installed_script
+    installed_script="$(command -v ccskill 2>/dev/null || echo "")"
+
+    if [[ -z "$installed_script" ]]; then
+        error "ccskill not found on PATH"
+        return 1
+    fi
+
+    # Resolve symlinks
+    installed_script="$(realpath "$installed_script")"
+    source_script="$(realpath "$source_script")"
+
+    if [[ "$installed_script" == "$source_script" ]]; then
+        success "Already running from source"
+        return
+    fi
+
+    if diff -q "$installed_script" "$source_script" &>/dev/null; then
+        success "ccskill is up to date"
+        return
+    fi
+
+    info "Update available"
+    dim "  Source:    $source_script"
+    dim "  Installed: $installed_script"
+
+    if ! confirm "Upgrade ccskill?"; then
+        dim "Cancelled"
+        return
+    fi
+
+    cp "$source_script" "$installed_script"
+    chmod +x "$installed_script"
+    success "ccskill upgraded"
+}
+
+cmd_doctor() {
+    check_deps
+    local issues=0
+
+    gum style --bold "ccskill doctor"
+    echo ""
+
+    # Registry
+    if [[ -d "$SKILL_REGISTRY" ]]; then
+        success "Registry: $SKILL_REGISTRY"
+    else
+        error "Registry not found: $SKILL_REGISTRY"
+        ((issues++))
+    fi
+
+    # Skills validity
+    if [[ -d "$SKILL_REGISTRY" ]]; then
+        local skill_count=0 broken=0
+        for dir in "$SKILL_REGISTRY"/*/; do
+            [[ -d "$dir" ]] || continue
+            ((skill_count++))
+            if [[ ! -f "$dir/SKILL.md" ]]; then
+                warn "Missing SKILL.md: $(basename "$dir")"
+                ((broken++))
+                ((issues++))
+            fi
+        done
+        if [[ $broken -eq 0 && $skill_count -gt 0 ]]; then
+            success "Skills: $skill_count in registry, all valid"
+        fi
+    fi
+
+    # Dependencies
+    if command -v bun &>/dev/null; then
+        success "bun: $(bun --version)"
+    else
+        warn "bun not found (needed for TypeScript skills)"
+        ((issues++))
+    fi
+
+    if command -v gum &>/dev/null; then
+        success "gum: $(gum --version 2>&1 | head -1)"
+    else
+        error "gum not found — install with: brew install gum"
+        ((issues++))
+    fi
+
+    # Binary freshness
+    local installed_script
+    installed_script="$(command -v ccskill 2>/dev/null || echo "")"
+    if [[ -n "$installed_script" ]]; then
+        local git_root
+        git_root="$(registry_git_root)"
+        if [[ -n "$git_root" && -f "$git_root/ccskill" ]]; then
+            local real_installed real_source
+            real_installed="$(realpath "$installed_script")"
+            real_source="$(realpath "$git_root/ccskill")"
+            if [[ "$real_installed" == "$real_source" ]]; then
+                success "Binary: running from source"
+            elif diff -q "$real_installed" "$real_source" &>/dev/null; then
+                success "Binary: up to date"
+            else
+                warn "Binary: outdated — run 'ccskill upgrade'"
+                ((issues++))
+            fi
+        fi
+    fi
+
+    # Installed skills freshness
+    for target in claude codex; do
+        local project_dir
+        project_dir="$(target_dir "$target")"
+        [[ -d "$project_dir" ]] || continue
+
+        local stale=0 count=0
+        for skill_dir in "$project_dir"/*/; do
+            [[ -f "$skill_dir/SKILL.md" ]] || continue
+            ((count++))
+            local skill_name
+            skill_name="$(basename "$skill_dir")"
+            if [[ -d "$SKILL_REGISTRY/$skill_name" ]] && ! diff -rq "$SKILL_REGISTRY/$skill_name" "$skill_dir" &>/dev/null; then
+                ((stale++))
+            fi
+        done
+        if [[ $stale -gt 0 ]]; then
+            warn "$(target_label "$target"): $stale skill(s) outdated — run 'ccskill update'"
+            ((issues++))
+        elif [[ $count -gt 0 ]]; then
+            success "$(target_label "$target"): $count skill(s), all current"
+        fi
+    done
+
+    echo ""
+    if [[ $issues -eq 0 ]]; then
+        success "No issues found"
+    else
+        warn "$issues issue(s) found"
+    fi
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -840,6 +1038,8 @@ case "${1:-help}" in
     remove|rm)  cmd_remove "${2:-}" ;;
     update|up)  cmd_update "${2:-}" ;;
     sync)       cmd_sync ;;
+    upgrade)    cmd_upgrade ;;
+    doctor)     cmd_doctor ;;
     init)       cmd_init ;;
     help|--help|-h) cmd_help ;;
     *)          error "Unknown command: $1"; cmd_help; exit 1 ;;
