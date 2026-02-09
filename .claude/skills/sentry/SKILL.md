@@ -66,6 +66,15 @@ Run `sentry-stats.sh help` for full command list.
 
 ## Configuration
 
-Requires `SENTRY_AUTH_TOKEN` in `.env`. Get one at https://sentry.io/settings/auth-tokens/
+Add to `.env`:
+
+```
+SENTRY_AUTH_TOKEN=sntrys_...
+SENTRY_ORG=your-org
+SENTRY_PROJECT=your-project
+SENTRY_PROJECT_ID=1234567890
+```
+
+Get a token at https://sentry.io/settings/auth-tokens/
 
 Script: `.claude/skills/sentry/scripts/sentry-stats.sh`

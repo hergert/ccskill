@@ -34,9 +34,9 @@
 
 set -euo pipefail
 
-# Config - can be overridden via environment
-PROJECT_ID="${POSTHOG_PROJECT_ID:-189513}"
-API_BASE="https://us.i.posthog.com"
+# Config - set in .env or environment
+PROJECT_ID="${POSTHOG_PROJECT_ID:-}"
+API_BASE="${POSTHOG_API_BASE:-https://us.i.posthog.com}"
 
 # Find project root (look for .env file)
 find_env() {
@@ -47,14 +47,14 @@ find_env() {
     done
 }
 
-# Load API key from multiple locations
+# Load config from .env
 POSTHOG_KEY="${POSTHOG_KEY:-}"
-if [[ -z "$POSTHOG_KEY" ]]; then
-    for env_file in "$(find_env)" "$HOME/.env"; do
-        [[ -f "$env_file" ]] && POSTHOG_KEY=$(grep -E '^POSTHOG_PERSONAL_API_KEY=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
-        [[ -n "${POSTHOG_KEY:-}" ]] && break
-    done
-fi
+for _env_file in "$(find_env)" "$HOME/.env"; do
+    [[ -f "$_env_file" ]] || continue
+    [[ -z "$POSTHOG_KEY" ]] && POSTHOG_KEY=$(grep -E '^POSTHOG_PERSONAL_API_KEY=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
+    [[ -z "${PROJECT_ID:-}" ]] && PROJECT_ID=$(grep -E '^POSTHOG_PROJECT_ID=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
+done
+unset _env_file
 
 # Check jq
 command -v jq >/dev/null || { echo '{"error":"missing_jq","fix":"brew install jq"}'; exit 1; }
@@ -108,6 +108,10 @@ if [[ -z "${POSTHOG_KEY:-}" ]]; then
 fi
 if [[ "$POSTHOG_KEY" == phc_* ]]; then
     echo '{"error":"wrong_key_type","message":"Found project key (phc_), need personal key (phx_)","fix":"https://us.posthog.com/settings/user-api-keys"}'
+    exit 1
+fi
+if [[ -z "${PROJECT_ID:-}" ]]; then
+    echo '{"error":"missing_project_id","fix":"export POSTHOG_PROJECT_ID=... or add POSTHOG_PROJECT_ID to .env"}'
     exit 1
 fi
 
