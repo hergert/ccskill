@@ -882,9 +882,9 @@ cmd_upgrade() {
         return 1
     fi
 
-    # Resolve symlinks
-    installed_script="$(realpath "$installed_script")"
-    source_script="$(realpath "$source_script")"
+    # Resolve symlinks (portable - realpath not on macOS)
+    installed_script="$(cd "$(dirname "$installed_script")" && pwd)/$(basename "$installed_script")"
+    source_script="$(cd "$(dirname "$source_script")" && pwd)/$(basename "$source_script")"
 
     if [[ "$installed_script" == "$source_script" ]]; then
         success "Already running from source"
@@ -965,8 +965,8 @@ cmd_doctor() {
         git_root="$(registry_git_root)"
         if [[ -n "$git_root" && -f "$git_root/ccskill" ]]; then
             local real_installed real_source
-            real_installed="$(realpath "$installed_script")"
-            real_source="$(realpath "$git_root/ccskill")"
+            real_installed="$(cd "$(dirname "$installed_script")" && pwd)/$(basename "$installed_script")"
+            real_source="$(cd "$(dirname "$git_root/ccskill")" && pwd)/$(basename "$git_root/ccskill")"
             if [[ "$real_installed" == "$real_source" ]]; then
                 success "Binary: running from source"
             elif diff -q "$real_installed" "$real_source" &>/dev/null; then
