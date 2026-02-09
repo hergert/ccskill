@@ -66,6 +66,13 @@ Run `bash .codex/skills/posthog/scripts/posthog.sh help` for full command list.
 
 ## Configuration
 
-Requires `POSTHOG_PERSONAL_API_KEY` in `.env`. Get one at https://us.posthog.com/settings/user-api-keys
+Add to `.env`:
+
+```
+POSTHOG_PERSONAL_API_KEY=phx_...
+POSTHOG_PROJECT_ID=12345
+```
+
+Get a personal API key at https://us.posthog.com/settings/user-api-keys
 
 Script: `.codex/skills/posthog/scripts/posthog.sh`

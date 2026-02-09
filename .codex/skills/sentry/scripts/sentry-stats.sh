@@ -14,10 +14,10 @@
 
 set -euo pipefail
 
-# Config - can be overridden via environment
-ORG="${SENTRY_ORG:-searchergo}"
-PROJECT="${SENTRY_PROJECT:-scribe}"
-PROJECT_ID="${SENTRY_PROJECT_ID:-4506062444888064}"
+# Config - set in .env or environment
+ORG="${SENTRY_ORG:-}"
+PROJECT="${SENTRY_PROJECT:-}"
+PROJECT_ID="${SENTRY_PROJECT_ID:-}"
 API_BASE="https://sentry.io/api/0"
 
 # Find project root (look for .env file)
@@ -29,20 +29,24 @@ find_env() {
     done
 }
 
-# Load API key - prefer env var, then .env file
-load_key() {
-    SENTRY_TOKEN="${SENTRY_TOKEN:-}"
-    if [[ -z "$SENTRY_TOKEN" ]]; then
-        for env_file in "$(find_env)" "$HOME/.env"; do
-            [[ -f "$env_file" ]] && SENTRY_TOKEN=$(grep -E '^SENTRY_AUTH_TOKEN=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
-            [[ -n "${SENTRY_TOKEN:-}" ]] && break
-        done
-    fi
+# Load config and API key from env vars or .env file
+load_config() {
+    local env_file
+    for env_file in "$(find_env)" "$HOME/.env"; do
+        [[ -f "$env_file" ]] || continue
+        [[ -z "${SENTRY_TOKEN:-}" ]] && SENTRY_TOKEN=$(grep -E '^SENTRY_AUTH_TOKEN=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
+        [[ -z "${ORG:-}" ]] && ORG=$(grep -E '^SENTRY_ORG=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
+        [[ -z "${PROJECT:-}" ]] && PROJECT=$(grep -E '^SENTRY_PROJECT=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
+        [[ -z "${PROJECT_ID:-}" ]] && PROJECT_ID=$(grep -E '^SENTRY_PROJECT_ID=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d "\"'" || true)
+    done
     if [[ -z "${SENTRY_TOKEN:-}" ]]; then
         echo '{"error":"missing_api_key","fix":"Set SENTRY_TOKEN or add SENTRY_AUTH_TOKEN to .env"}'
         exit 1
     fi
 }
+
+# Backwards compat alias
+load_key() { load_config; }
 
 # URL encode (pure bash)
 urlencode() {
@@ -370,7 +374,7 @@ COMMANDS:
 
 SETUP:
     export SENTRY_TOKEN=...     # or add SENTRY_AUTH_TOKEN to .env
-    Get token: https://searchergo.sentry.io/settings/auth-tokens/
+    Get token: https://sentry.io/settings/auth-tokens/
 
 EXAMPLES:
     $0 errors                   # Quick check for unresolved issues
@@ -390,6 +394,11 @@ case "${1:-help}" in
 esac
 
 load_key
+
+if [[ -z "${ORG:-}" || -z "${PROJECT:-}" || -z "${PROJECT_ID:-}" ]]; then
+    echo '{"error":"missing_config","fix":"Add SENTRY_ORG, SENTRY_PROJECT, SENTRY_PROJECT_ID to .env"}'
+    exit 1
+fi
 
 case "${1:-help}" in
     errors)     cmd_errors "${2:-10}" ;;

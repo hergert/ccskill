@@ -172,7 +172,16 @@ case "${1:-errors}" in
         show_context
         DURATION="${2:-30}"
         echo "Tailing for ${DURATION}s (Ctrl+C to stop early)..." >&2
-        timeout "$DURATION" gcloud run services logs tail "$SERVICE" --region="$REGION" || true
+        if command -v timeout &>/dev/null; then
+            timeout "$DURATION" gcloud run services logs tail "$SERVICE" --region="$REGION" || true
+        else
+            # macOS: use background process + sleep as fallback
+            gcloud run services logs tail "$SERVICE" --region="$REGION" &
+            local tail_pid=$!
+            sleep "$DURATION"
+            kill "$tail_pid" 2>/dev/null || true
+            wait "$tail_pid" 2>/dev/null || true
+        fi
         ;;
 
     since)
