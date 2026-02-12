@@ -2,35 +2,29 @@
 # posthog.sh - Query PostHog analytics (agent-friendly)
 # All output is JSON to stdout. No stderr noise.
 #
-# LLM:
-#   posthog.sh llm [hours]              # Summary: calls, latency, tokens, cost
-#   posthog.sh llm-slow [hours] [n]     # Top N slowest calls
-#   posthog.sh llm-by-type [hours]      # Breakdown by span_name
-#
-# Pipeline:
-#   posthog.sh pipeline [hours]         # Step health: runs, success rate, duration
+# Explore:
 #   posthog.sh events [hours]           # Event distribution
-#   posthog.sh sources [hours]          # Articles per source
+#   posthog.sh trends <event> [brk] [h] # Trends with optional breakdown
+#   posthog.sh raw <event> [n] [h]      # Raw events
 #
 # Dashboards:
 #   posthog.sh dashboards               # List all dashboards
 #   posthog.sh dashboard <name>         # Get dashboard by name
 #   posthog.sh dashboard-detail <id>    # Full dashboard with tile configs
 #
-# Insights (debugging):
+# Insights:
 #   posthog.sh insight <id>             # Get insight config
 #   posthog.sh insight-test <id>        # Execute query, check for data
 #   posthog.sh insight-refresh <id>     # Force cache refresh
 #   posthog.sh insight-save <id>        # Set saved=true
 #   posthog.sh insight-delete <id>      # Delete insight
-#
-# Maintenance:
 #   posthog.sh triage                   # Scan for issues
 #   posthog.sh triage-fix               # Auto-fix not_saved
 #
-# Query:
-#   posthog.sh trends <event> [brk] [h] # Trends with optional breakdown
-#   posthog.sh raw <event> [n] [h]      # Raw events
+# LLM (requires $ai_generation events):
+#   posthog.sh llm [hours]              # Summary: calls, latency, tokens, cost
+#   posthog.sh llm-slow [hours] [n]     # Top N slowest calls
+#   posthog.sh llm-by-type [hours]      # Breakdown by span_name
 
 set -euo pipefail
 
@@ -65,35 +59,29 @@ case "${1:-help}" in
         cat <<'EOF'
 posthog.sh - Query PostHog analytics (agent-friendly)
 
-LLM:
-  llm [hours]              Summary: calls, latency, tokens, cost (default: 1h)
-  llm-slow [hours] [n]     Top N slowest calls (default: 1h, 10)
-  llm-by-type [hours]      Breakdown by span_name (default: 1h)
-
-Pipeline:
-  pipeline [hours]         Step health: runs, success rate, duration (default: 24h)
+Explore:
   events [hours]           Event distribution (default: 24h)
-  sources [hours]          Articles per source from latest stats (default: 24h)
+  trends <event> [brk] [h] Run trends query with optional breakdown (default: 24h)
+  raw <event> [n] [h]      Raw events (default: 20 events, 24h)
 
 Dashboards:
   dashboards               List all dashboards with URLs
   dashboard <name>         Get dashboard by name (partial match)
   dashboard-detail <id>    Full dashboard: filters, tiles, insight configs
 
-Insights (debugging "why is my insight empty?"):
+Insights:
   insight <id>             Get insight config (query, filters, last_refresh)
   insight-test <id>        Execute insight query, check if returns data
   insight-refresh <id>     Force refresh insight cache
   insight-save <id>        Set saved=true (required for dashboard render)
   insight-delete <id>      Delete an insight
-
-Maintenance:
   triage                   Scan all insights for issues (not_saved, wrong_wrapper)
   triage-fix               Auto-fix all not_saved insights
 
-Query:
-  trends <event> [brk] [h] Run trends query with optional breakdown (default: 24h)
-  raw <event> [n] [h]      Raw events (default: 20 events, 24h)
+LLM (requires $ai_generation events):
+  llm [hours]              Summary: calls, latency, tokens, cost (default: 1h)
+  llm-slow [hours] [n]     Top N slowest calls (default: 1h, 10)
+  llm-by-type [hours]      Breakdown by span_name (default: 1h)
 
 All output is JSON. Errors have {error, message, fix/hint} structure.
 EOF
@@ -187,7 +175,7 @@ cmd_llm_slow() {
                     model: .properties["$ai_model"],
                     input_tokens: .properties["$ai_input_tokens"],
                     output_tokens: .properties["$ai_output_tokens"],
-                    story_id: .properties.story_id,
+                    custom: (.properties | with_entries(select(.key | startswith("$") | not))),
                     timestamp: .timestamp[:19]
                 }
             ]
@@ -217,48 +205,6 @@ cmd_llm_by_type() {
                 }
             ] | sort_by(-.calls)
         } end'
-}
-
-# =============================================================================
-# Pipeline Commands
-# =============================================================================
-
-cmd_pipeline() {
-    local hours="${1:-24}"
-    local after=$(timestamp_hours_ago "$hours")
-
-    api_get "/events/?limit=500&after=${after}" | jq --argjson h "$hours" '
-        if .detail then {error: "api_error", message: .detail}
-        else
-            [.results[] | select(.event == "pipeline_run_completed" or .event == "pipeline_daily_stats")] as $p |
-            if ($p | length) == 0 then {status: "no_data", period_hours: $h}
-            else {
-                period_hours: $h,
-                steps: (
-                    [$p[] | select(.event == "pipeline_run_completed")] |
-                    group_by(.properties.step // "unknown") |
-                    map(
-                        .[0].properties.step as $step |
-                        ([.[].properties.processed // 0] | add) as $proc |
-                        ([.[].properties.succeeded // 0] | add) as $succ |
-                        {
-                            ($step // "unknown"): {
-                                runs: length,
-                                processed: $proc,
-                                succeeded: $succ,
-                                failed: ([.[].properties.failed // 0] | add),
-                                success_pct: (if $proc > 0 then ($succ / $proc * 100 | floor) else 0 end),
-                                avg_duration_ms: ([.[].properties.duration_ms // 0] | if length > 0 then add / length | floor else 0 end)
-                            }
-                        }
-                    ) | add // {}
-                ),
-                daily: (
-                    [$p[] | select(.event == "pipeline_daily_stats")][0].properties // null |
-                    if . then {news: .news_total, clusters: .clusters_total, active: .clusters_active} else null end
-                )
-            } end
-        end'
 }
 
 cmd_events() {
@@ -570,7 +516,7 @@ cmd_trends() {
     local hours="${3:-24}"
 
     if [[ -z "$event" ]]; then
-        echo '{"error":"missing_event","usage":"posthog.sh trends <event> [breakdown_property] [hours]","example":"posthog.sh trends pipeline_run_completed step 168"}'
+        echo '{"error":"missing_event","usage":"posthog.sh trends <event> [breakdown_property] [hours]","example":"posthog.sh trends $pageview $browser 24"}'
         return 1
     fi
 
@@ -610,34 +556,7 @@ cmd_trends() {
 }
 
 # =============================================================================
-# Source Commands
-# =============================================================================
-
-cmd_sources() {
-    local hours="${1:-24}"
-    local after=$(timestamp_hours_ago "$hours")
-
-    api_get "/events/?event=pipeline_daily_stats&limit=1&after=${after}" | jq --argjson h "$hours" '
-        if .detail then {error: "api_error", message: .detail}
-        elif (.results | length) == 0 then {status: "no_data", period_hours: $h, message: "No pipeline_daily_stats events. Run pipeline first."}
-        else
-            .results[0].properties as $p |
-            ($p.source_counts // {}) as $counts |
-            {
-                period_hours: $h,
-                timestamp: .results[0].timestamp[:19],
-                sources_active: $p.sources_active,
-                news_total: $p.news_total,
-                source_counts: (
-                    $counts | to_entries | sort_by(-.value) |
-                    map({source: .key, articles: .value})
-                )
-            }
-        end'
-}
-
-# =============================================================================
-# Debug Commands
+# Query Commands
 # =============================================================================
 
 cmd_raw() {
@@ -661,12 +580,9 @@ cmd_raw() {
 }
 
 case "${1:-help}" in
-    llm)              cmd_llm "${2:-1}" ;;
-    llm-slow)         cmd_llm_slow "${2:-1}" "${3:-10}" ;;
-    llm-by-type)      cmd_llm_by_type "${2:-1}" ;;
-    pipeline)         cmd_pipeline "${2:-24}" ;;
     events)           cmd_events "${2:-24}" ;;
-    sources)          cmd_sources "${2:-24}" ;;
+    trends)           cmd_trends "${2:-}" "${3:-}" "${4:-24}" ;;
+    raw)              cmd_raw "${2:-}" "${3:-20}" "${4:-24}" ;;
     dashboards)       cmd_dashboards ;;
     dashboard)        cmd_dashboard "${2:-}" ;;
     dashboard-detail) cmd_dashboard_detail "${2:-}" ;;
@@ -677,7 +593,8 @@ case "${1:-help}" in
     insight-delete)   cmd_insight_delete "${2:-}" ;;
     triage)           cmd_triage ;;
     triage-fix)       cmd_triage_fix ;;
-    trends)           cmd_trends "${2:-}" "${3:-}" "${4:-24}" ;;
-    raw)              cmd_raw "${2:-}" "${3:-20}" "${4:-24}" ;;
-    *)                echo '{"error":"unknown_command","command":"'"$1"'","available":["llm","pipeline","events","sources","dashboards","dashboard","dashboard-detail","insight","insight-test","insight-refresh","insight-save","insight-delete","triage","triage-fix","trends","raw","help"]}' ;;
+    llm)              cmd_llm "${2:-1}" ;;
+    llm-slow)         cmd_llm_slow "${2:-1}" "${3:-10}" ;;
+    llm-by-type)      cmd_llm_by_type "${2:-1}" ;;
+    *)                echo '{"error":"unknown_command","command":"'"$1"'","available":["events","trends","raw","dashboards","dashboard","dashboard-detail","insight","insight-test","insight-refresh","insight-save","insight-delete","triage","triage-fix","llm","llm-slow","llm-by-type","help"]}' ;;
 esac

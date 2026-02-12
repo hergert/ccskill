@@ -1,4 +1,4 @@
 interface:
   display_name: "PostHog Analytics"
-  short_description: "LLM cost, latency, and pipeline health"
-  default_prompt: "Use $posthog to report LLM cost, latency, and failures for the last 24h."
+  short_description: "Query PostHog events, dashboards, insights, and LLM analytics"
+  default_prompt: "Use $posthog to show event distribution and dashboard status for the last 24h."
