@@ -208,8 +208,7 @@ cmd_spans() {
         query="span.description:${endpoint_filter}"
         echo "# Filter: $query" >&2
     else
-        query="!span.name:middleware.starlette"
-        echo "# Filter: excluding middleware" >&2
+        echo "# No filter (all spans)" >&2
     fi
     echo "# Slow Spans (period: $period, limit: $limit)" >&2
 
